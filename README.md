@@ -1,27 +1,64 @@
-# Conversor de PDF para Markdown
+import os
+import tempfile
 
-Aplicação de tela única (Streamlit) para professores converterem PDF em Markdown, sem precisar de terminal ou programação.
+import streamlit as st
 
-## Como executar localmente
+from converter import convert_pdf, build_result_zip
 
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
+st.set_page_config(page_title="Conversor de PDF para Markdown", page_icon="📄", layout="centered")
 
-O navegador abrirá automaticamente em `http://localhost:8501`.
+st.title("Conversor de PDF para Markdown")
+st.write("Envie um PDF, converta e baixe o resultado em Markdown (com as imagens do documento).")
 
-## Como publicar para os professores usarem (sem instalar nada)
+if "resultado_dados" not in st.session_state:
+    st.session_state.resultado_dados = None
+if "resultado_nome" not in st.session_state:
+    st.session_state.resultado_nome = None
+if "resultado_mime" not in st.session_state:
+    st.session_state.resultado_mime = None
 
-A forma mais simples é o **Streamlit Community Cloud** (gratuito):
+uploaded_file = st.file_uploader(
+    "Arraste o PDF aqui ou clique em Selecionar PDF",
+    type=["pdf"],
+    accept_multiple_files=False,
+)
 
-1. Suba esta pasta (`app.py`, `converter.py`, `requirements.txt`) para um repositório no GitHub.
-2. Acesse https://share.streamlit.io, conecte o repositório e aponte para `app.py`.
-3. O Streamlit gera um link público — é só compartilhar esse link com os professores.
+if uploaded_file is not None:
+    st.write(f"**Arquivo selecionado:** {uploaded_file.name}")
 
-## Uso
+converter_clicado = st.button("Converter para Markdown", type="primary", disabled=uploaded_file is None)
 
-1. Arraste o PDF ou clique em "Selecionar PDF".
-2. Clique em "Converter para Markdown".
-3. Aguarde a mensagem de conclusão.
-4. Clique em "Baixar resultado" para obter um `.zip` com `documento.md` e a pasta `imagens/`.
+if converter_clicado and uploaded_file is not None:
+    with st.spinner("Convertendo PDF, por favor aguarde..."):
+        pdf_bytes = uploaded_file.read()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            def progress_cb(pagina, total):
+                pass  # reservado para barra de progresso futura, se necessário
+
+            markdown_text = convert_pdf(pdf_bytes, tmp_dir, progress_callback=progress_cb)
+
+            imagens_dir = os.path.join(tmp_dir, "imagens")
+            tem_imagens = os.path.isdir(imagens_dir) and len(os.listdir(imagens_dir)) > 0
+
+            nome_base = os.path.splitext(uploaded_file.name)[0]
+
+            if tem_imagens:
+                zip_path = build_result_zip(markdown_text, tmp_dir)
+                with open(zip_path, "rb") as f:
+                    st.session_state.resultado_dados = f.read()
+                st.session_state.resultado_nome = f"{nome_base}.zip"
+                st.session_state.resultado_mime = "application/zip"
+            else:
+                st.session_state.resultado_dados = markdown_text.encode("utf-8")
+                st.session_state.resultado_nome = f"{nome_base}.md"
+                st.session_state.resultado_mime = "text/markdown"
+
+    st.success("Conversão concluída com sucesso!")
+
+if st.session_state.resultado_dados is not None:
+    st.download_button(
+        label="Baixar resultado",
+        data=st.session_state.resultado_dados,
+        file_name=st.session_state.resultado_nome or "resultado.md",
+        mime=st.session_state.resultado_mime or "text/markdown",
+    )
