@@ -10,10 +10,12 @@ st.set_page_config(page_title="Conversor de PDF para Markdown", page_icon="📄"
 st.title("Conversor de PDF para Markdown")
 st.write("Envie um PDF, converta e baixe o resultado em Markdown (com as imagens do documento).")
 
-if "resultado_zip" not in st.session_state:
-    st.session_state.resultado_zip = None
+if "resultado_dados" not in st.session_state:
+    st.session_state.resultado_dados = None
 if "resultado_nome" not in st.session_state:
     st.session_state.resultado_nome = None
+if "resultado_mime" not in st.session_state:
+    st.session_state.resultado_mime = None
 
 uploaded_file = st.file_uploader(
     "Arraste o PDF aqui ou clique em Selecionar PDF",
@@ -34,20 +36,29 @@ if converter_clicado and uploaded_file is not None:
                 pass  # reservado para barra de progresso futura, se necessário
 
             markdown_text = convert_pdf(pdf_bytes, tmp_dir, progress_callback=progress_cb)
-            zip_path = build_result_zip(markdown_text, tmp_dir)
 
-            with open(zip_path, "rb") as f:
-                st.session_state.resultado_zip = f.read()
+            imagens_dir = os.path.join(tmp_dir, "imagens")
+            tem_imagens = os.path.isdir(imagens_dir) and len(os.listdir(imagens_dir)) > 0
 
-        nome_base = os.path.splitext(uploaded_file.name)[0]
-        st.session_state.resultado_nome = f"{nome_base}.zip"
+            nome_base = os.path.splitext(uploaded_file.name)[0]
+
+            if tem_imagens:
+                zip_path = build_result_zip(markdown_text, tmp_dir)
+                with open(zip_path, "rb") as f:
+                    st.session_state.resultado_dados = f.read()
+                st.session_state.resultado_nome = f"{nome_base}.zip"
+                st.session_state.resultado_mime = "application/zip"
+            else:
+                st.session_state.resultado_dados = markdown_text.encode("utf-8")
+                st.session_state.resultado_nome = f"{nome_base}.md"
+                st.session_state.resultado_mime = "text/markdown"
 
     st.success("Conversão concluída com sucesso!")
 
-if st.session_state.resultado_zip is not None:
+if st.session_state.resultado_dados is not None:
     st.download_button(
         label="Baixar resultado",
-        data=st.session_state.resultado_zip,
-        file_name=st.session_state.resultado_nome or "resultado.zip",
-        mime="application/zip",
+        data=st.session_state.resultado_dados,
+        file_name=st.session_state.resultado_nome or "resultado.md",
+        mime=st.session_state.resultado_mime or "text/markdown",
     )
