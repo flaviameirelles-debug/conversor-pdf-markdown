@@ -1,12 +1,10 @@
 import os
+import re
 import tempfile
-
 import streamlit as st
-
 from converter import convert_pdf, build_result_zip
 
 st.set_page_config(page_title="Conversor de PDF para Markdown", page_icon="📄", layout="centered")
-
 st.title("Conversor de PDF para Markdown")
 st.write("Envie um PDF, converta e baixe o resultado em Markdown (com as imagens do documento).")
 
@@ -16,6 +14,29 @@ if "resultado_nome" not in st.session_state:
     st.session_state.resultado_nome = None
 if "resultado_mime" not in st.session_state:
     st.session_state.resultado_mime = None
+
+
+def sanitizar_nome_arquivo(nome):
+    """Remove acentos, espaços e caracteres especiais do nome do arquivo,
+    para evitar problemas no header Content-Disposition do download."""
+    # Remove acentos (normaliza para forma decomposta e descarta os
+    # caracteres de acentuação)
+    import unicodedata
+    nome_sem_acento = unicodedata.normalize("NFKD", nome)
+    nome_sem_acento = "".join(c for c in nome_sem_acento if not unicodedata.combining(c))
+
+    # Substitui qualquer coisa que não seja letra/número/hífen/underscore por "_"
+    nome_limpo = re.sub(r"[^a-zA-Z0-9_-]+", "_", nome_sem_acento)
+
+    # Remove underscores duplicados e nas pontas
+    nome_limpo = re.sub(r"_+", "_", nome_limpo).strip("_")
+
+    # Garante que não fique vazio
+    if not nome_limpo:
+        nome_limpo = "documento"
+
+    return nome_limpo
+
 
 uploaded_file = st.file_uploader(
     "Arraste o PDF aqui ou clique em Selecionar PDF",
@@ -36,11 +57,11 @@ if converter_clicado and uploaded_file is not None:
                 pass  # reservado para barra de progresso futura, se necessário
 
             markdown_text = convert_pdf(pdf_bytes, tmp_dir, progress_callback=progress_cb)
-
             imagens_dir = os.path.join(tmp_dir, "imagens")
             tem_imagens = os.path.isdir(imagens_dir) and len(os.listdir(imagens_dir)) > 0
 
-            nome_base = os.path.splitext(uploaded_file.name)[0]
+            nome_original = os.path.splitext(uploaded_file.name)[0]
+            nome_base = sanitizar_nome_arquivo(nome_original)
 
             if tem_imagens:
                 zip_path = build_result_zip(markdown_text, tmp_dir)
