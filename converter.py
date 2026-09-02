@@ -132,10 +132,14 @@ def _table_to_markdown(table):
     return "\n".join(lines)
 
 
-def convert_pdf(pdf_bytes, output_dir, images_dirname="imagens", progress_callback=None):
+def convert_pdf(pdf_bytes, output_dir, images_dirname="imagens", progress_callback=None, filename_prefix=""):
     """
     Converte um PDF (bytes) em Markdown, salvando imagens extraídas em
     output_dir/images_dirname.
+
+    'filename_prefix' é opcional e é usado para evitar colisão de nomes de
+    imagem quando várias conversões compartilham a mesma pasta de imagens
+    (conversão de múltiplos PDFs de uma vez).
 
     Retorna o texto Markdown completo (str).
     """
@@ -218,7 +222,7 @@ def convert_pdf(pdf_bytes, output_dir, images_dirname="imagens", progress_callba
                 continue
             image_counter += 1
             ext = base_image.get("ext", "png")
-            filename = f"pagina_{page_num:03d}_imagem_{image_counter:03d}.{ext}"
+            filename = f"{filename_prefix}pagina_{page_num:03d}_imagem_{image_counter:03d}.{ext}"
             filepath = os.path.join(images_dir, filename)
             with open(filepath, "wb") as f:
                 f.write(base_image["image"])
@@ -261,3 +265,30 @@ def build_result_zip(markdown_text, output_dir, images_dirname="imagens", md_fil
                     zf.write(fpath, arcname=os.path.join(images_dirname, fname))
 
     return zip_path
+
+
+def build_combined_markdown(items):
+    """
+    Junta o Markdown de vários PDFs em um único texto, com marcadores
+    indicando o início e o fim de cada documento de origem.
+
+    'items' é uma lista de dicionários, cada um com:
+      - "nome_arquivo": nome do PDF original (com extensão), só para exibição
+      - "markdown": texto Markdown já gerado para esse PDF
+    """
+    parts = []
+    for item in items:
+        nome = item["nome_arquivo"]
+        parts.append(
+            f"<!-- ===== documento: {nome} ===== -->\n\n"
+            f"{item['markdown']}\n\n"
+            f"<!-- ===== fim do documento: {nome} ===== -->"
+        )
+    return "\n\n".join(parts)
+
+
+def build_result_zip_from_markdown(markdown_text, output_dir, images_dirname="imagens", md_filename="documento.md"):
+    """Igual a build_result_zip, mas recebe o Markdown já pronto (útil quando
+    o Markdown já foi combinado a partir de vários PDFs) e reaproveita uma
+    pasta de imagens compartilhada já existente em output_dir/images_dirname."""
+    return build_result_zip(markdown_text, output_dir, images_dirname=images_dirname, md_filename=md_filename)
