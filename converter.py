@@ -6,6 +6,7 @@ Regras principais:
 - Preserva a ordem das páginas.
 - Cada página é delimitada por marcadores explícitos.
 - Extrai imagens para uma pasta separada e referencia via Markdown.
+- Comprime/redimensiona imagens grandes para reduzir o tamanho final do ZIP.
 - Tenta preservar tabelas em formato Markdown.
 - Usa heurística de tamanho de fonte para detectar títulos/subtítulos.
 """
@@ -15,6 +16,20 @@ import io
 import statistics
 import zipfile
 import fitz  # PyMuPDF
+
+try:
+    from PIL import Image
+    PIL_DISPONIVEL = True
+except ImportError:
+    PIL_DISPONIVEL = False
+
+# Configurações de compressão de imagem.
+# Imagens maiores que MAX_IMAGE_DIMENSION (em pixels, no maior lado) são
+# redimensionadas mantendo a proporção. JPEG_QUALITY controla a compressão
+# para imagens salvas como JPEG (fotos). PNGs continuam sem perda, mas
+# passam por otimização.
+MAX_IMAGE_DIMENSION = 1600
+JPEG_QUALITY = 78
 
 
 def _heading_level(font_size, body_size):
@@ -79,7 +94,7 @@ def _line_to_markdown(line, body_size):
         text = span.get("text", "")
         if not text:
             continue
-        if span.get("text", "").strip() == "" :
+        if span.get("text", "").strip() == "":
             parts.append(text)
             continue
         bold = _span_is_bold(span)
@@ -132,10 +147,73 @@ def _table_to_markdown(table):
     return "\n".join(lines)
 
 
+def _comprimir_imagem(image_bytes, ext):
+    """Recebe os bytes originais de uma imagem extraída do PDF e retorna
+    (novos_bytes, nova_extensao) comprimidos/redimensionados para reduzir
+    o tamanho final do ZIP.
+
+    - Se Pillow não estiver disponível, devolve a imagem original sem
+      alterações (comportamento antigo, como rede de segurança).
+    - Imagens com o maior lado acima de MAX_IMAGE_DIMENSION são
+      redimensionadas mantendo a proporção.
+    - Imagens com transparência (RGBA/P) são salvas como PNG otimizado.
+    - Demais imagens (fotos, sem transparência) são salvas como JPEG,
+      que comprime muito mais que PNG para fotos.
+    """
+    if not PIL_DISPONIVEL:
+        return image_bytes, ext
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img.load()
+    except Exception:
+        # Se não conseguir abrir (formato exótico, imagem corrompida etc.),
+        # devolve o original sem arriscar perder a imagem.
+        return image_bytes, ext
+
+    # Redimensiona se estiver maior que o limite definido
+    largura, altura = img.size
+    maior_lado = max(largura, altura)
+    if maior_lado > MAX_IMAGE_DIMENSION:
+        escala = MAX_IMAGE_DIMENSION / float(maior_lado)
+        nova_largura = max(1, int(largura * escala))
+        nova_altura = max(1, int(altura * escala))
+        try:
+            img = img.resize((nova_largura, nova_altura), Image.LANCZOS)
+        except Exception:
+            pass
+
+    tem_transparencia = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+
+    buffer = io.BytesIO()
+    try:
+        if tem_transparencia:
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            img.save(buffer, format="PNG", optimize=True)
+            nova_ext = "png"
+        else:
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            img.save(buffer, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+            nova_ext = "jpg"
+    except Exception:
+        return image_bytes, ext
+
+    novos_bytes = buffer.getvalue()
+
+    # Só usa a versão comprimida se ela realmente for menor;
+    # caso contrário, mantém o original.
+    if len(novos_bytes) < len(image_bytes):
+        return novos_bytes, nova_ext
+    return image_bytes, ext
+
+
 def convert_pdf(pdf_bytes, output_dir, images_dirname="imagens", progress_callback=None, filename_prefix=""):
     """
     Converte um PDF (bytes) em Markdown, salvando imagens extraídas em
-    output_dir/images_dirname.
+    output_dir/images_dirname (já comprimidas/redimensionadas para reduzir
+    o tamanho final).
 
     'filename_prefix' é opcional e é usado para evitar colisão de nomes de
     imagem quando várias conversões compartilham a mesma pasta de imagens
@@ -194,10 +272,6 @@ def convert_pdf(pdf_bytes, output_dir, images_dirname="imagens", progress_callba
             if block_lines:
                 content_lines.append("\n".join(block_lines))
 
-        # Insere blocos de tabela na posição vertical aproximada correta
-        combined = [(0, "\n\n".join(content_lines))] if content_lines else []
-        # Estratégia simples: texto primeiro, tabelas ao final do texto
-        # (posição exata é difícil de garantir; mantemos ordem estável)
         body_text = "\n\n".join(content_lines).strip()
 
         page_md_sections = []
@@ -206,7 +280,7 @@ def convert_pdf(pdf_bytes, output_dir, images_dirname="imagens", progress_callba
         for _, table_md in sorted(table_markdowns, key=lambda x: x[0]):
             page_md_sections.append(table_md)
 
-        # Extração de imagens da página
+        # Extração de imagens da página (com compressão)
         image_list = page.get_images(full=True)
         image_counter = 0
         image_refs = []
@@ -220,12 +294,18 @@ def convert_pdf(pdf_bytes, output_dir, images_dirname="imagens", progress_callba
                 base_image = doc.extract_image(xref)
             except Exception:
                 continue
-            image_counter += 1
+
+            image_bytes = base_image["image"]
             ext = base_image.get("ext", "png")
+
+            # Comprime/redimensiona antes de salvar em disco
+            image_bytes, ext = _comprimir_imagem(image_bytes, ext)
+
+            image_counter += 1
             filename = f"{filename_prefix}pagina_{page_num:03d}_imagem_{image_counter:03d}.{ext}"
             filepath = os.path.join(images_dir, filename)
             with open(filepath, "wb") as f:
-                f.write(base_image["image"])
+                f.write(image_bytes)
             image_refs.append(f"![{filename}]({images_dirname}/{filename})")
 
         if image_refs:
