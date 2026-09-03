@@ -5,16 +5,18 @@ Regras principais:
 - Não resume, não interpreta e não altera o conteúdo textual.
 - Preserva a ordem das páginas.
 - Cada página é delimitada por marcadores explícitos.
-- Extrai imagens para uma pasta separada e referencia via Markdown.
-- Comprime/redimensiona imagens grandes para reduzir o tamanho final do ZIP.
+- Imagens são embutidas diretamente no Markdown em base64 (data URI) —
+  não é mais gerada uma pasta "imagens" nem um .zip. O resultado é sempre
+  um único arquivo .md, o que evita problemas de download de .zip
+  bloqueado por antivírus/rede em alguns computadores.
+- Comprime/redimensiona imagens grandes para reduzir o tamanho final do .md.
 - Tenta preservar tabelas em formato Markdown.
 - Usa heurística de tamanho de fonte para detectar títulos/subtítulos.
 """
 
-import os
 import io
+import base64
 import statistics
-import zipfile
 import fitz  # PyMuPDF
 
 try:
@@ -25,6 +27,21 @@ except ImportError:
 
 MAX_IMAGE_DIMENSION = 1600
 JPEG_QUALITY = 78
+
+_MIME_POR_EXT = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "bmp": "image/bmp",
+    "tiff": "image/tiff",
+    "tif": "image/tiff",
+    "webp": "image/webp",
+}
+
+
+def _mime_type(ext):
+    return _MIME_POR_EXT.get(ext.lower(), "application/octet-stream")
 
 
 def _heading_level(font_size, body_size):
@@ -178,13 +195,25 @@ def _comprimir_imagem(image_bytes, ext):
     return image_bytes, ext
 
 
-def convert_pdf(pdf_bytes, output_dir, images_dirname="imagens", progress_callback=None, filename_prefix=""):
-    images_dir = os.path.join(output_dir, images_dirname)
-    os.makedirs(images_dir, exist_ok=True)
+def _imagem_para_data_uri(image_bytes, ext):
+    mime = _mime_type(ext)
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{mime};base64,{b64}"
 
+
+def convert_pdf(pdf_bytes, progress_callback=None, filename_prefix=""):
+    """
+    Converte o PDF em um único texto Markdown, com as imagens já
+    embutidas em base64 (data URI) dentro do próprio texto.
+
+    Não recebe mais output_dir/images_dirname: não há arquivos
+    intermediários nem pasta de imagens — tudo fica em memória e
+    dentro da string Markdown retornada.
+    """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     total_pages = len(doc)
     markdown_parts = []
+    tem_imagens = False
 
     for page_index in range(total_pages):
         page_num = page_index + 1
@@ -257,11 +286,10 @@ def convert_pdf(pdf_bytes, output_dir, images_dirname="imagens", progress_callba
             image_bytes, ext = _comprimir_imagem(image_bytes, ext)
 
             image_counter += 1
-            filename = f"{filename_prefix}pagina_{page_num:03d}_imagem_{image_counter:03d}.{ext}"
-            filepath = os.path.join(images_dir, filename)
-            with open(filepath, "wb") as f:
-                f.write(image_bytes)
-            image_refs.append(f"![{filename}]({images_dirname}/{filename})")
+            nome_alt = f"{filename_prefix}pagina_{page_num:03d}_imagem_{image_counter:03d}"
+            data_uri = _imagem_para_data_uri(image_bytes, ext)
+            image_refs.append(f"![{nome_alt}]({data_uri})")
+            tem_imagens = True
 
         if image_refs:
             page_md_sections.append("\n\n".join(image_refs))
@@ -278,26 +306,8 @@ def convert_pdf(pdf_bytes, output_dir, images_dirname="imagens", progress_callba
         markdown_parts.append(page_block)
 
     doc.close()
-    return "\n\n".join(markdown_parts)
-
-
-def build_result_zip(markdown_text, output_dir, images_dirname="imagens", md_filename="documento.md"):
-    md_path = os.path.join(output_dir, md_filename)
-    with open(md_path, "w", encoding="utf-8") as f:
-        f.write(markdown_text)
-
-    zip_path = os.path.join(output_dir, "resultado.zip")
-    images_dir = os.path.join(output_dir, images_dirname)
-
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.write(md_path, arcname=md_filename)
-        if os.path.isdir(images_dir):
-            for fname in sorted(os.listdir(images_dir)):
-                fpath = os.path.join(images_dir, fname)
-                if os.path.isfile(fpath):
-                    zf.write(fpath, arcname=os.path.join(images_dirname, fname))
-
-    return zip_path
+    markdown_text = "\n\n".join(markdown_parts)
+    return markdown_text, tem_imagens
 
 
 def build_combined_markdown(items):
@@ -310,7 +320,3 @@ def build_combined_markdown(items):
             f"<!-- ===== fim do documento: {nome} ===== -->"
         )
     return "\n\n".join(parts)
-
-
-def build_result_zip_from_markdown(markdown_text, output_dir, images_dirname="imagens", md_filename="documento.md"):
-    return build_result_zip(markdown_text, output_dir, images_dirname=images_dirname, md_filename=md_filename)
